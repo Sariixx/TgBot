@@ -1,4 +1,4 @@
-import asyncio, aiosqlite, uuid
+import asyncio, aiosqlite, uuid, random
 from typing import Optional, List, Any, Tuple
 from config import DB_PATH
 
@@ -94,7 +94,8 @@ class OrderRepository:
             if not row or row[0] == 0:
                 await db.rollback()
                 return False, None
-            order_code = str(uuid.uuid4())[:8]
+            raw_code = ''.join(random.choices('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', k=12))
+            order_code = f"{raw_code[:4]}-{raw_code[4:8]}-{raw_code[8:12]}"
             await db.execute(
                 'INSERT INTO orders (user_id, vehicle_id, username, active, rental_period, start_date, order_code) VALUES (?, ?, ?, 1, ?, ?, ?)',
                 (user_id, vehicle_id, username, rental_period, start_date, order_code)
@@ -120,7 +121,7 @@ class OrderRepository:
                 'UPDATE orders SET active=0 WHERE user_id=? AND vehicle_id=? AND active=1',
                 (user_id, vehicle_id)
             )
-            await db.execute('UPDATE vehicles SET quantity = quantity + 1 WHERE id=?', (vehicle_id,))
+            await db.execute('UPDATE vehicles SET quantity = MIN(quantity + 1, max_quantity) WHERE id=?', (vehicle_id,))
             await db.commit()
             return True
 
