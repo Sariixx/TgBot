@@ -50,9 +50,11 @@ def make_transport_kb() -> ReplyKeyboardMarkup:
     kb.add(KeyboardButton(BTN_BACK))
     return kb
 
-def make_rental_period_reply_kb() -> ReplyKeyboardMarkup:
+def make_rental_period_reply_kb_dynamic(power, range_km):
+    day_price = get_vehicle_price(power, range_km, 'day')
+    week_price = get_vehicle_price(power, range_km, 'week')
     kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    kb.row(KeyboardButton(BTN_DAY), KeyboardButton(BTN_WEEK))
+    kb.row(KeyboardButton(f"1 день - {day_price} грн"), KeyboardButton(f"1 тиждень - {week_price} грн"))
     kb.add(KeyboardButton(BTN_BACK))
     return kb
 
@@ -83,11 +85,13 @@ async def show_types(m: types.Message):
 
 @dp.message_handler(lambda m: m.text == BTN_BIKES)
 async def bikes(m: types.Message):
+    user_data[m.from_user.id] = {'selected_type': 'electric_bike'}
     text = await build_vehicle_list('electric_bike')
     await send_menu(m.chat.id, text, make_transport_kb())
 
 @dp.message_handler(lambda m: m.text == BTN_SCOOTERS)
 async def scooters(m: types.Message):
+    user_data[m.from_user.id] = {'selected_type': 'electric_scooter'}
     text = await build_vehicle_list('electric_scooter')
     await send_menu(m.chat.id, text, make_transport_kb())
 
@@ -103,20 +107,28 @@ async def want_cancel(m: types.Message):
         return
     text = "Введіть ID транспорту для скасування оренди:\n"
     for o in orders:
-        period = PRICES[o[4]]['text']
-        price = f"{PRICES[o[4]]['price']} грн"
+        price = get_vehicle_price(o[3], 0, o[4])
+        period = '1 день' if o[4] == 'day' else '1 тиждень'
         start = o[5] if o[5] else "-"
         code = o[6] if len(o) > 6 else "-"
-        text += f"{o[1]}. {o[2]} — {period}, {price}, початок: {start}, код: {code}\n"
+        text += f"{o[1]}. {o[2]} — {period}, {price} грн, початок: {start}, код: {code}\n"
     await m.answer(text)
     user_return_mode[m.from_user.id] = True
 
 @dp.message_handler(lambda message: message.text.isdigit() and user_return_mode.get(message.from_user.id))
 async def process_return_request(message: types.Message):
     vehicle_id = int(message.text)
+    orders = await service.get_user_orders(message.from_user.id)
+    if not any(str(o[1]) == str(vehicle_id) for o in orders):
+        await message.answer("Неправильний ID або такого транспорту не існує у ваших орендах. Спробуйте ще раз.")
+        return
     ok, resp = await service.return_vehicle(message.from_user.id, vehicle_id)
     await send_menu(message.chat.id, resp, make_main_kb())
     user_return_mode.pop(message.from_user.id, None)
+
+@dp.message_handler(lambda message: not message.text.isdigit() and user_return_mode.get(message.from_user.id))
+async def process_return_wrong_id(message: types.Message):
+    await message.answer("Неправильний ID або такого транспорту не існує у ваших орендах. Спробуйте ще раз.")
 
 @dp.message_handler(lambda message: message.text == BTN_MY_RENTALS)
 async def myorders(message: types.Message):
@@ -126,11 +138,13 @@ async def myorders(message: types.Message):
         return
     text = "Ваші активні оренди:\n\n"
     for o in orders:
-        period = PRICES[o[4]]['text']
-        price = f"{PRICES[o[4]]['price']} грн"
+        day_price = get_vehicle_price(o[3], 0, 'day')
+        week_price = get_vehicle_price(o[3], 0, 'week')
+        period = '1 день' if o[4] == 'day' else '1 тиждень'
+        price = get_vehicle_price(o[3], 0, o[4])
         start = o[5] if o[5] else "-"
         code = o[6] if len(o) > 6 else "-"
-        text += f"ID: {o[1]}\nМодель: {o[2]}\nТермін: {period}\nЦіна: {price}\nПочаток: {start}\nКод оренди: {code}\n\n"
+        text += f"ID: {o[1]}\nМодель: {o[2]}\nТермін: {period}\nЦіна: {price} грн\nПочаток: {start}\nКод оренди: {code}\n\n"
     await message.answer(text)
 
 @dp.message_handler(lambda m: m.text.startswith("/cancel"))
@@ -154,20 +168,30 @@ async def refresh_menu(message: types.Message):
 async def cached_available():
     return await service.get_available_vehicles_by_type('electric_bike')
 
-@dp.message_handler(lambda m: m.text.isdigit() and not user_return_mode.get(m.from_user.id))
+@dp.message_handler(lambda m: (not user_return_mode.get(m.from_user.id)) and m.text.isdigit())
 async def process_rent_request(message: types.Message):
-    vehicle_id = int(message.text)
-    vehicles = await service.get_available_vehicles_by_type('electric_bike') + await service.get_available_vehicles_by_type('electric_scooter')
-    if not any(v[0] == vehicle_id for v in vehicles):
-        await message.answer("Цей транспорт недоступний. Оберіть інший ID.")
+    selected_type = user_data.get(message.from_user.id, {}).get('selected_type')
+    if not selected_type:
         return
-    user_data[message.from_user.id] = {'vehicle_id': vehicle_id}
-    await message.answer("Оберіть термін оренди:", reply_markup=make_rental_period_reply_kb())
+    vehicle_id = int(message.text)
+    vehicles = await service.get_available_vehicles_by_type(selected_type)
+    vehicle = next((v for v in vehicles if v[0] == vehicle_id), None)
+    if not vehicle:
+        await message.answer("Неправильний ID або такого транспорту не існує. Спробуйте ще раз.")
+        return
+    user_data[message.from_user.id].update({'vehicle_id': vehicle_id, 'power': vehicle[2], 'range_km': vehicle[3]})
+    kb = make_rental_period_reply_kb_dynamic(vehicle[2], vehicle[3])
+    await message.answer("Оберіть термін оренди:", reply_markup=kb)
 
-@dp.message_handler(lambda m: m.text in [BTN_DAY, BTN_WEEK] and user_data.get(m.from_user.id))
+@dp.message_handler(lambda m: (m.text.startswith('1 день') or m.text.startswith('1 тиждень')) and user_data.get(m.from_user.id))
 async def process_rental_period_reply(message: types.Message):
     user_id = message.from_user.id
-    rental_period = 'day' if message.text == BTN_DAY else 'week'
+    if message.text.startswith('1 день'):
+        rental_period = 'day'
+    elif message.text.startswith('1 тиждень'):
+        rental_period = 'week'
+    else:
+        rental_period = None
     user_data[user_id]['rental_period'] = rental_period
     await message.answer("Оберіть дату початку оренди:", reply_markup=make_start_date_kb())
 
@@ -177,13 +201,18 @@ async def process_start_date(message: types.Message):
     start_date = message.text
     vehicle_id = user_data[user_id]['vehicle_id']
     rental_period = user_data[user_id]['rental_period']
+    power = user_data[user_id].get('power', 0)
+    range_km = user_data[user_id].get('range_km', 0)
     ok, order_code = await service.create_order(user_id, vehicle_id, message.from_user.username, rental_period, start_date)
     if ok:
-        period_ua = PRICES[rental_period]['text']
-        price = f"{PRICES[rental_period]['price']} грн"
-        await message.answer(f"Оренду успішно оформлено!\nТермін: {period_ua}\nЦіна: {price}\nПочаток: {start_date}\nВаш код оренди: <code>{order_code}</code>", parse_mode='HTML', reply_markup=make_main_kb())
+        price = get_vehicle_price(power, range_km, rental_period)
+        period_ua = '1 день' if rental_period == 'day' else '1 тиждень'
+        await message.answer(f"Оренду успішно оформлено!\nТермін: {period_ua}\nЦіна: {price} грн\nПочаток: {start_date}\nВаш код оренди: <code>{order_code}</code>", parse_mode='HTML', reply_markup=make_main_kb())
     else:
-        await message.answer("Помилка при оформленні оренди. Спробуйте пізніше.", reply_markup=make_main_kb())
+        if order_code:
+            await message.answer(order_code, reply_markup=make_main_kb())
+        else:
+            await message.answer("Помилка при оформленні оренди. Спробуйте пізніше.", reply_markup=make_main_kb())
     del user_data[user_id]
 
 def is_valid_date(text):
@@ -193,6 +222,12 @@ def is_valid_date(text):
     except Exception:
         return False
 
+def get_vehicle_price(power, range_km, rental_period):
+    if power >= 500 or range_km >= 80:
+        return 450 if rental_period == 'day' else 2000
+    else:
+        return 300 if rental_period == 'day' else 1500
+
 async def build_vehicle_list(v_type: str) -> str:
     vehicles = await service.get_available_vehicles_by_type(v_type)
     if not vehicles:
@@ -200,10 +235,20 @@ async def build_vehicle_list(v_type: str) -> str:
     name = "електровелосипеди" if v_type == 'electric_bike' else 'електросамокати'
     text = f"Доступні {name}:\n\n"
     for v in vehicles:
+        day_price = get_vehicle_price(v[2], v[3], 'day')
+        week_price = get_vehicle_price(v[2], v[3], 'week')
         text += (f"ID: {v[0]}\nМодель: {v[1]}\nПотужність: {v[2]} Вт\n"
-                 f"Запас ходу: {v[3]} км\nЗалишилось: {v[5]} шт.\n\n")
+                 f"Запас ходу: {v[3]} км\nЦіна: {day_price} грн/день, {week_price} грн/тиждень\n"
+                 f"Залишилось: {v[5]} шт.\n\n")
     text += "\nДля оренди введіть ID бажаної моделі"
     return text
+
+@dp.message_handler(lambda m: (not user_return_mode.get(m.from_user.id)) and not m.text.isdigit() and not (m.text.startswith('1 день') or m.text.startswith('1 тиждень')))
+async def process_wrong_id(message: types.Message):
+    selected_type = user_data.get(message.from_user.id, {}).get('selected_type')
+    if not selected_type:
+        return
+    await message.answer("Неправильний ID або такого транспорту не існує. Спробуйте ще раз.")
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
