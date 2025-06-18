@@ -14,6 +14,9 @@ class RentService:
 
     async def create_order(self, user_id: int, vehicle_id: int, username: str, rental_period: str, start_date: str) -> Tuple[bool, Optional[str]]:
         try:
+            active_orders = await self.order_repo.get_active_orders(user_id)
+            if active_orders:
+                return False, 'У вас вже є активна оренда. Ви не можете оформити більше однієї.'
             vehicles = await self.vehicle_repo.get_available()
             vehicle = next((v for v in vehicles if v[0] == vehicle_id), None)
             
