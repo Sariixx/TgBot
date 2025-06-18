@@ -35,7 +35,7 @@ def init_db():
     ''')
 
     vehicles = [
-        ('electric_bike', 'E-Bike Pro X1', 500, 80, 150, 5, 5),
+        ('electric_bike', 'E-Bike Pro X1', 250, 40, 80, 5, 5),
         ('electric_bike', 'E-Bike Sport S2', 750, 100, 200, 5, 5),
         ('electric_scooter', 'Scooter Max', 350, 40, 100, 5, 5),
         ('electric_scooter', 'Scooter Ultra', 500, 60, 150, 5, 5)
@@ -45,7 +45,6 @@ def init_db():
         vehicles
     )
 
-    #c.execute("CREATE INDEX IF NOT EXISTS idx_vehicle_available ON vehicles(available)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_orders_active   ON orders(active)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_orders_vehicle  ON orders(vehicle_id)")
 
